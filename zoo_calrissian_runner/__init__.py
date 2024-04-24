@@ -433,41 +433,69 @@ class ZooCalrissianRunner:
         self.update_status(progress=90, message="delivering outputs, logs and usage report")
 
         logger.info("handle outputs execution logs")
-        output = execution.get_output()
-        log = execution.get_log()
-        usage_report = execution.get_usage_report()
-        tool_logs = execution.get_tool_logs()
 
-        self.outputs.set_output(output)
+        if exit_value == zoo.SERVICE_SUCCEEDED:
+            logger.info("execution successful")
+            output = execution.get_output()
+            log = execution.get_log()
+            usage_report = execution.get_usage_report()
+            tool_logs = execution.get_tool_logs()
 
-        self.handler.handle_outputs(
-            log=log,
-            output=output,
-            usage_report=usage_report,
-            tool_logs=tool_logs,
-        )
+            self.outputs.set_output(output)
 
-        self.update_status(progress=97, message="Post-execution hook")
-        self.handler.post_execution_hook(
-            log=log,
-            output=output,
-            usage_report=usage_report,
-            tool_logs=tool_logs,
-        )
+            self.handler.handle_outputs(
+                log=log,
+                output=output,
+                usage_report=usage_report,
+                tool_logs=tool_logs,
+            )
 
-        self.update_status(progress=99, message="clean-up processing resources")
+            self.update_status(progress=97, message="Post-execution hook")
+            self.handler.post_execution_hook(
+                log=log,
+                output=output,
+                usage_report=usage_report,
+                tool_logs=tool_logs,
+            )
 
-        # use an environment variable to decide if we want to clean up the resources
-        if os.environ.get("KEEP_SESSION", "false") == "false":
-            logger.info("clean-up kubernetes resources")
-            session.dispose()
+            self.update_status(progress=99, message="clean-up processing resources")
+
+            # use an environment variable to decide if we want to clean up the resources
+            if os.environ.get("KEEP_SESSION", "false") == "false":
+                logger.info("clean-up kubernetes resources")
+                session.dispose()
+            else:
+                logger.info("kubernetes resources not cleaned up")
+
+            self.update_status(
+                progress=100,
+                message='execution successful',
+            )
+
         else:
-            logger.info("kubernetes resources not cleaned up")
+            logger.info("execution failed")
+            output = None
+            log = execution.get_log()
+            usage_report = execution.get_usage_report()
+            tool_logs = execution.get_tool_logs()
+            self.handler.handle_outputs(
+                log=log,
+                output=output,
+                usage_report=usage_report,
+                tool_logs=tool_logs,
+            )
 
-        self.update_status(
-            progress=100,
-            message=f'execution {"failed" if exit_value == zoo.SERVICE_FAILED else "successful"}',
-        )
+            # use an environment variable to decide if we want to clean up the resources
+            if os.environ.get("KEEP_SESSION", "false") == "false":
+                logger.info("clean-up kubernetes resources")
+                session.dispose()
+            else:
+                logger.info("kubernetes resources not cleaned up")
+
+            self.update_status(
+                progress=100,
+                message='execution failed',
+            )
 
         return exit_value
 
