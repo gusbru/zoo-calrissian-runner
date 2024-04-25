@@ -460,6 +460,7 @@ class ZooCalrissianRunner:
                 output=output,
                 usage_report=usage_report,
                 tool_logs=tool_logs,
+                namespace=namespace,
             )
 
             self.update_status(progress=99, message="clean-up processing resources")
@@ -482,12 +483,18 @@ class ZooCalrissianRunner:
             log = execution.get_log()
             usage_report = execution.get_usage_report()
             tool_logs = execution.get_tool_logs()
+
+            self.update_status(progress=97, message="Post-execution hook")
+
             self.handler.handle_outputs(
                 log=log,
                 output=output,
                 usage_report=usage_report,
                 tool_logs=tool_logs,
+                namespace=namespace,
             )
+
+            self.update_status(progress=99, message="clean-up processing resources")
 
             # use an environment variable to decide if we want to clean up the resources
             if os.environ.get("KEEP_SESSION", "false") == "false":
