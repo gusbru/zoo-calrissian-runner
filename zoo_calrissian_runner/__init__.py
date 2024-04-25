@@ -418,6 +418,10 @@ class ZooCalrissianRunner:
 
         logger.info("execution")
         execution = CalrissianExecution(job=job, runtime_context=session)
+
+        # this execution happens on a separate pod
+        # this is the only thing that happens on a separate pod (job execution pod)
+        # all the rest of this function happens on zoo-fpm pod
         execution.submit()
 
         execution.monitor(interval=self.monitor_interval)
