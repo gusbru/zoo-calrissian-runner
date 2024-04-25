@@ -452,6 +452,7 @@ class ZooCalrissianRunner:
                 output=output,
                 usage_report=usage_report,
                 tool_logs=tool_logs,
+                namespace=namespace,
             )
 
             self.update_status(progress=97, message="Post-execution hook")
