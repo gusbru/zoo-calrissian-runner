@@ -461,7 +461,6 @@ class ZooCalrissianRunner:
                 output=output,
                 usage_report=usage_report,
                 tool_logs=tool_logs,
-                namespace=namespace,
             )
 
             self.update_status(progress=99, message="clean-up processing resources")
