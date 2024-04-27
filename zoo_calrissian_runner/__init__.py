@@ -356,152 +356,170 @@ class ZooCalrissianRunner:
             for elem in self.get_workflow_inputs(mandatory=True)
         )
 
-    def execute(self):
-        self.update_status(progress=2, message="Pre-execution hook")
-        self.handler.pre_execution_hook()
-
-        if not (self.assert_parameters()):
-            logger.error("Mandatory parameters missing")
-            return zoo.SERVICE_FAILED
-
-        logger.info("execution started")
-        self.update_status(progress=5, message="starting execution")
-
-        logger.info("wrap CWL workflow with stage-in/out steps")
-        wrapped_workflow = self.wrap()
-        self.update_status(progress=10, message="workflow wrapped, creating processing environment")
-
-        logger.info("create kubernetes namespace for Calrissian execution")
-
-        # TODO how do we manage the secrets
-        secret_config = self.handler.get_secrets()
-
-        namespace = self.get_namespace_name()
-
-        self.handler.set_job_id(job_id=namespace)
-
-        logger.info(f"namespace: {namespace}")
-
-        session = CalrissianContext(
-            namespace=namespace,
-            storage_class=self.storage_class,
-            volume_size=self.get_volume_size(),
-            image_pull_secrets=secret_config,
-        )
-        session.initialise()
-        self.update_status(progress=15, message="processing environment created, preparing execution")
-
-        processing_parameters = {
-            "process": namespace,
-            **self.get_processing_parameters(),
-            **self.handler.get_additional_parameters(),
-        }
-
-        # checks if all parameters where provided
-
-        logger.info("create Calrissian job")
-        job = CalrissianJob(
-            cwl=wrapped_workflow,
-            params=processing_parameters,
-            runtime_context=session,
-            cwl_entry_point="main",
-            max_cores=self.get_max_cores(),
-            max_ram=self.get_max_ram(),
-            pod_env_vars=self.handler.get_pod_env_vars(),
-            pod_node_selector=self.handler.get_pod_node_selector(),
-            debug=True,
-            no_read_only=True,
-            tool_logs=True,
-        )
-
-        self.update_status(progress=20, message="execution submitted")
-
-        logger.info("execution")
-        execution = CalrissianExecution(job=job, runtime_context=session)
-
-        # this execution happens on a separate pod
-        # this is the only thing that happens on a separate pod (job execution pod)
-        # all the rest of this function happens on zoo-fpm pod
-        execution.submit()
-
-        execution.monitor(interval=self.monitor_interval)
-
-        if execution.is_complete():
-            logger.info("execution complete")
-
-        if execution.is_succeeded():
-            exit_value = zoo.SERVICE_SUCCEEDED
+    def cleanup(self):
+        """clean up the resources"""
+        # use an environment variable to decide if we want to clean up the resources
+        if os.environ.get("KEEP_SESSION", "false") == "false":
+            logger.info("clean-up kubernetes resources")
+            self.session.dispose()
         else:
+            logger.info("kubernetes resources not cleaned up")
+    
+    def execute(self):
+        try:
+            self.update_status(progress=2, message="Pre-execution hook")
+            self.handler.pre_execution_hook()
+
+            if not (self.assert_parameters()):
+                logger.error("Mandatory parameters missing")
+                return zoo.SERVICE_FAILED
+
+            logger.info("execution started")
+            self.update_status(progress=5, message="starting execution")
+
+            logger.info("wrap CWL workflow with stage-in/out steps")
+            wrapped_workflow = self.wrap()
+            self.update_status(progress=10, message="workflow wrapped, creating processing environment")
+
+            logger.info("create kubernetes namespace for Calrissian execution")
+
+            # TODO how do we manage the secrets
+            secret_config = self.handler.get_secrets()
+
+            namespace = self.get_namespace_name()
+
+            self.handler.set_job_id(job_id=namespace)
+
+            logger.info(f"namespace: {namespace}")
+
+            self.session = CalrissianContext(
+                namespace=namespace,
+                storage_class=self.storage_class,
+                volume_size=self.get_volume_size(),
+                image_pull_secrets=secret_config,
+            )
+            
+            self.session.initialise()
+            self.update_status(progress=15, message="processing environment created, preparing execution")
+
+            processing_parameters = {
+                "process": namespace,
+                **self.get_processing_parameters(),
+                **self.handler.get_additional_parameters(),
+            }
+
+            # checks if all parameters where provided
+
+            logger.info("create Calrissian job")
+            job = CalrissianJob(
+                cwl=wrapped_workflow,
+                params=processing_parameters,
+                runtime_context=self.session,
+                cwl_entry_point="main",
+                max_cores=self.get_max_cores(),
+                max_ram=self.get_max_ram(),
+                pod_env_vars=self.handler.get_pod_env_vars(),
+                pod_node_selector=self.handler.get_pod_node_selector(),
+                debug=True,
+                no_read_only=True,
+                tool_logs=True,
+            )
+
+            self.update_status(progress=20, message="execution submitted")
+
+            logger.info("Creating job execution")
+            execution = CalrissianExecution(job=job, runtime_context=self.session)
+
+            # this execution happens on a separate pod
+            # this is the only thing that happens on a separate pod (job execution pod)
+            # all the rest of this function happens on zoo-fpm pod
+            execution.submit()
+
+            execution.monitor(interval=self.monitor_interval)
+
+            if execution.is_complete():
+                logger.info("execution complete")
+
+            if execution.is_succeeded():
+                logger.info("execution succeeded")
+                exit_value = zoo.SERVICE_SUCCEEDED
+            else:
+                logger.info("execution failed")
+                exit_value = zoo.SERVICE_FAILED
+
+            self.update_status(progress=90, message="delivering outputs, logs and usage report")
+
+            logger.info("handle outputs execution logs")
+
+            if exit_value == zoo.SERVICE_SUCCEEDED:
+                logger.info("execution successful")
+                output = execution.get_output()
+                log = execution.get_log()
+                usage_report = execution.get_usage_report()
+                tool_logs = execution.get_tool_logs()
+
+                self.outputs.set_output(output)
+
+                self.handler.handle_outputs(
+                    log=log,
+                    output=output,
+                    usage_report=usage_report,
+                    tool_logs=tool_logs,
+                    namespace=namespace,
+                )
+
+                self.update_status(progress=97, message="Post-execution hook")
+                self.handler.post_execution_hook(
+                    log=log,
+                    output=output,
+                    usage_report=usage_report,
+                    tool_logs=tool_logs,
+                )
+
+                self.update_status(progress=99, message="clean-up processing resources")
+
+                # use an environment variable to decide if we want to clean up the resources
+                self.cleanup()
+
+                self.update_status(
+                    progress=100,
+                    message='execution successful',
+                )
+
+            else:
+                logger.info("execution failed")
+                output = None
+                log = execution.get_log()
+                usage_report = execution.get_usage_report()
+                tool_logs = execution.get_tool_logs()
+
+                self.update_status(progress=97, message="Post-execution hook")
+
+                self.handler.handle_outputs(
+                    log=log,
+                    output=output,
+                    usage_report=usage_report,
+                    tool_logs=tool_logs,
+                    namespace=namespace,
+                )
+
+                self.update_status(progress=99, message="clean-up processing resources")
+
+                # use an environment variable to decide if we want to clean up the resources
+                self.cleanup()
+
+                self.update_status(
+                    progress=100,
+                    message='execution failed',
+                )
+        except Exception as exc:
+            logger.error(f"An error occurred: {exc}")
             exit_value = zoo.SERVICE_FAILED
 
-        self.update_status(progress=90, message="delivering outputs, logs and usage report")
-
-        logger.info("handle outputs execution logs")
-
-        if exit_value == zoo.SERVICE_SUCCEEDED:
-            logger.info("execution successful")
-            output = execution.get_output()
-            log = execution.get_log()
-            usage_report = execution.get_usage_report()
-            tool_logs = execution.get_tool_logs()
-
-            self.outputs.set_output(output)
-
-            self.handler.handle_outputs(
-                log=log,
-                output=output,
-                usage_report=usage_report,
-                tool_logs=tool_logs,
-                namespace=namespace,
-            )
-
-            self.update_status(progress=97, message="Post-execution hook")
-            self.handler.post_execution_hook(
-                log=log,
-                output=output,
-                usage_report=usage_report,
-                tool_logs=tool_logs,
-            )
-
             self.update_status(progress=99, message="clean-up processing resources")
 
             # use an environment variable to decide if we want to clean up the resources
-            if os.environ.get("KEEP_SESSION", "false") == "false":
-                logger.info("clean-up kubernetes resources")
-                session.dispose()
-            else:
-                logger.info("kubernetes resources not cleaned up")
-
-            self.update_status(
-                progress=100,
-                message='execution successful',
-            )
-
-        else:
-            logger.info("execution failed")
-            output = None
-            log = execution.get_log()
-            usage_report = execution.get_usage_report()
-            tool_logs = execution.get_tool_logs()
-
-            self.update_status(progress=97, message="Post-execution hook")
-
-            self.handler.handle_outputs(
-                log=log,
-                output=output,
-                usage_report=usage_report,
-                tool_logs=tool_logs,
-                namespace=namespace,
-            )
-
-            self.update_status(progress=99, message="clean-up processing resources")
-
-            # use an environment variable to decide if we want to clean up the resources
-            if os.environ.get("KEEP_SESSION", "false") == "false":
-                logger.info("clean-up kubernetes resources")
-                session.dispose()
-            else:
-                logger.info("kubernetes resources not cleaned up")
+            self.cleanup()
 
             self.update_status(
                 progress=100,
@@ -523,5 +541,11 @@ class ZooCalrissianRunner:
             assets=None,
             workflow_id=workflow_id,
         )
+
+        try:
+            logger.info("wrapped workflow")
+            logger.info(f"{wf.out}")
+        except Exception as exc:
+            logger.error(f"An error occurred: {exc}")
 
         return wf.out
